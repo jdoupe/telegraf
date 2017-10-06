@@ -15,6 +15,7 @@ import (
 	"github.com/influxdata/telegraf/internal"
 	"github.com/influxdata/telegraf/plugins/outputs"
 	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
 var invalidNameCharRE = regexp.MustCompile(`[^a-zA-Z0-9_]`)
@@ -76,7 +77,7 @@ func (p *PrometheusClient) Start() error {
 	}
 
 	mux := http.NewServeMux()
-	mux.Handle(p.Path, prometheus.Handler())
+	mux.Handle(p.Path, promhttp.Handler())
 
 	p.server = &http.Server{
 		Addr:    p.Listen,
