@@ -103,6 +103,11 @@ const sampleConfig = `
   ## Master node.
   cluster_stats = false
 
+  ## node_stats is a list of sub-stats that you want to have gathered. Valid options
+  ## are "indices", "os", "process", "jvm", "thread_pool", "fs", "transport", "http",
+  ## "breaker". Per default, all stats are gathered.
+  # node_stats = ["jvm", "http"]
+
   ## Optional SSL Config
   # ssl_ca = "/etc/telegraf/ca.pem"
   # ssl_cert = "/etc/telegraf/cert.pem"
@@ -120,6 +125,7 @@ type Elasticsearch struct {
 	ClusterHealth           bool
 	ClusterHealthLevel      string
 	ClusterStats            bool
+	NodeStats               []string
 	SSLCA                   string `toml:"ssl_ca"`   // Path to CA file
 	SSLCert                 string `toml:"ssl_cert"` // Path to host cert file
 	SSLKey                  string `toml:"ssl_key"`  // Path to cert key file
@@ -135,6 +141,19 @@ func NewElasticsearch() *Elasticsearch {
 		HttpTimeout:        internal.Duration{Duration: time.Second * 5},
 		ClusterHealthLevel: "indices",
 	}
+}
+
+// perform status mapping
+func mapHealthStatusToCode(s string) int {
+	switch strings.ToLower(s) {
+	case "green":
+		return 1
+	case "yellow":
+		return 2
+	case "red":
+		return 3
+	}
+	return 0
 }
 
 // SampleConfig returns sample configuration for this plugin.
@@ -165,12 +184,7 @@ func (e *Elasticsearch) Gather(acc telegraf.Accumulator) error {
 	for _, serv := range e.Servers {
 		go func(s string, acc telegraf.Accumulator) {
 			defer wg.Done()
-			var url string
-			if e.Local {
-				url = s + statsPathLocal
-			} else {
-				url = s + statsPath
-			}
+			url := e.nodeStatsUrl(s)
 			e.isMaster = false
 
 			if e.ClusterStats {
@@ -229,6 +243,22 @@ func (e *Elasticsearch) createHttpClient() (*http.Client, error) {
 	return client, nil
 }
 
+func (e *Elasticsearch) nodeStatsUrl(baseUrl string) string {
+	var url string
+
+	if e.Local {
+		url = baseUrl + statsPathLocal
+	} else {
+		url = baseUrl + statsPath
+	}
+
+	if len(e.NodeStats) == 0 {
+		return url
+	}
+
+	return fmt.Sprintf("%s/%s", url, strings.Join(e.NodeStats, ","))
+}
+
 func (e *Elasticsearch) gatherNodeStats(url string, acc telegraf.Accumulator) error {
 	nodeStats := &struct {
 		ClusterName string               `json:"cluster_name"`
@@ -269,6 +299,11 @@ func (e *Elasticsearch) gatherNodeStats(url string, acc telegraf.Accumulator) er
 
 		now := time.Now()
 		for p, s := range stats {
+			// if one of the individual node stats is not even in the
+			// original result
+			if s == nil {
+				continue
+			}
 			f := jsonparser.JSONFlattener{}
 			// parse Json, ignoring strings and bools
 			err := f.FlattenJSON("", s)
@@ -289,6 +324,7 @@ func (e *Elasticsearch) gatherClusterHealth(url string, acc telegraf.Accumulator
 	measurementTime := time.Now()
 	clusterFields := map[string]interface{}{
 		"status":                healthStats.Status,
+		"status_code":           mapHealthStatusToCode(healthStats.Status),
 		"timed_out":             healthStats.TimedOut,
 		"number_of_nodes":       healthStats.NumberOfNodes,
 		"number_of_data_nodes":  healthStats.NumberOfDataNodes,
@@ -308,6 +344,7 @@ func (e *Elasticsearch) gatherClusterHealth(url string, acc telegraf.Accumulator
 	for name, health := range healthStats.Indices {
 		indexFields := map[string]interface{}{
 			"status":                health.Status,
+			"status_code":           mapHealthStatusToCode(health.Status),
 			"number_of_shards":      health.NumberOfShards,
 			"number_of_replicas":    health.NumberOfReplicas,
 			"active_primary_shards": health.ActivePrimaryShards,
